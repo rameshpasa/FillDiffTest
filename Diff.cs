@@ -8,8 +8,51 @@ namespace my.utils {
   /// This Class implements the Difference Algorithm published in
   /// "An O(ND) Difference Algorithm and its Variations" by Eugene Myers
   /// Algorithmica Vol. 1 No. 2, 1986, p 251.  
+  /// 
+  /// There are many C, Java, Lisp implementations public available but they all seem to come
+  /// from the same source (diffutils) that is under the (unfree) GNU public License
+  /// and cannot be reused as a sourcecode for a commercial application.
+  /// There are very old C implementations that use other (worse) algorithms.
+  /// Microsoft also published sourcecode of a diff-tool (windiff) that uses some tree data.
+  /// Also, a direct transfer from a C source to C# is not easy because there is a lot of pointer
+  /// arithmetic in the typical C solutions and i need a managed solution.
+  /// These are the reasons why I implemented the original published algorithm from the scratch and
+  /// make it avaliable without the GNU license limitations.
+  /// I do not need a high performance diff tool because it is used only sometimes.
+  /// I will do some performace tweaking when needed.
+  /// 
   /// The algorithm itself is comparing 2 arrays of numbers so when comparing 2 text documents
   /// each line is converted into a (hash) number. See DiffText(). 
+  /// 
+  /// Some chages to the original algorithm:
+  /// The original algorithm was described using a recursive approach and comparing zero indexed arrays.
+  /// Extracting sub-arrays and rejoining them is very performance and memory intensive so the same
+  /// (readonly) data arrays are passed arround together with their lower and upper bounds.
+  /// This circumstance makes the LCS and SMS functions more complicate.
+  /// I added some code to the LCS function to get a fast response on sub-arrays that are identical,
+  /// completely deleted or inserted.
+  /// 
+  /// The result from a comparisation is stored in 2 arrays that flag for modified (deleted or inserted)
+  /// lines in the 2 data arrays. These bits are then analysed to produce a array of Item objects.
+  /// 
+  /// Further possible optimizations:
+  /// (first rule: don't do it; second: don't do it yet)
+  /// The arrays DataA and DataB are passed as parameters, but are never changed after the creation
+  /// so they can be members of the class to avoid the paramter overhead.
+  /// In SMS is a lot of boundary arithmetic in the for-D and for-k loops that can be done by increment
+  /// and decrement of local variables.
+  /// The DownVector and UpVector arrays are alywas created and destroyed each time the SMS gets called.
+  /// It is possible to reuse tehm when transfering them to members of the class.
+  /// See TODO: hints.
+  /// 
+  /// Changes:
+  /// 2002.09.20 There was a "hang" in some situations.
+  /// Now I undestand a little bit more of the SMS algorithm. 
+  /// There have been overlapping boxes; that where analyzed partial differently.
+  /// One return-point is enough.
+  /// A assertion was added in CreateDiffs when in debug-mode, that counts the number of equal (no modified) lines in both arrays.
+  /// They must be identical.
+  /// 
   /// </summary>
 	
   public class Diff {
@@ -32,7 +75,7 @@ namespace my.utils {
     /// </summary>
     private struct SMSRD {
       internal int x, y; 
-      internal int u, v; 
+      // internal int u, v;  // 2002.09.20: no need for 2 points 
     } 
 
     /// <summary>The A-Version of the data (original data) to be compared.</summary>
@@ -40,6 +83,8 @@ namespace my.utils {
 
     /// <summary>The B-Version of the data (modified data) to be compared.</summary>
     private DiffData DataB;
+
+    #region self-Test
 
 #if (false)
     /// <summary>
@@ -53,28 +98,45 @@ namespace my.utils {
       string a, b;
 
       Debug.setDebug(true);
-      // Debug.setDebugLevel(0);
+      Debug.setDebugLevel(0);
 
       // test all changes
       a = "a,b,c,d,e,f,g,h,i,j,k,l".Replace(',', '\n');
       b = "0,1,2,3,4,5,6,7,8,9".Replace(',', '\n');
-      Debug.Assert(TestHelper(d.DiffText(a, b, false, false, false)) == "12.10.0.0*", 
+      Debug.Assert(TestHelper(d.DiffText(a, b, false, false, false))
+        == "12.10.0.0*", 
         "Diff-Selftest", "all-changes test failed.");
  
       // test all same
       a = "a,b,c,d,e,f,g,h,i,j,k,l".Replace(',', '\n');
       b = a;
-      Debug.Assert(TestHelper(d.DiffText(a, b, false, false, false)) == "", 
+      Debug.Assert(TestHelper(d.DiffText(a, b, false, false, false))
+        == "", 
         "Diff-Selftest", "all-same test failed.");
 
+      // test snake
+      a = "a,b,c,d,e,f".Replace(',', '\n');
+      b = "b,c,d,e,f,x".Replace(',', '\n');
+      Debug.Assert(TestHelper(d.DiffText(a, b, false, false, false))
+        == "1.0.0.0*0.1.6.5*", 
+        "Diff-Selftest", "snake test failed.");
+
+      // 2002.09.20 - repro
+      a = "c1,a,c2,b,c,d,e,g,h,i,j,c3,k,l".Replace(',', '\n');
+      b = "C1,a,C2,b,c,d,e,I1,e,g,h,i,j,C3,k,I2,l".Replace(',', '\n');
+      Debug.Assert(TestHelper(d.DiffText(a, b, false, false, false))
+        == "1.1.0.0*1.1.2.2*0.2.7.7*1.1.11.13*0.1.13.15*", 
+        "Diff-Selftest", "snake test failed.");
+      
       // test some differences
       a = "a,b,-,c,d,e,f,f".Replace(',', '\n');
-      b = "la,b,x,c,e,f".Replace(',', '\n');
-      Debug.Assert(TestHelper(d.DiffText(a, b, false, false, false)) == "1.1.2.2*1.0.4.4*1.0.6.5*", 
+      b = "a,b,x,c,e,f".Replace(',', '\n');
+      Debug.Assert(TestHelper(d.DiffText(a, b, false, false, false))
+        == "1.1.2.2*1.0.4.4*1.0.6.5*", 
         "Diff-Selftest", "some-changes test failed.");
       return (0);
     }
-#endif
+
 
     public static string TestHelper(Item []f) {
       StringBuilder ret = new StringBuilder();
@@ -83,6 +145,8 @@ namespace my.utils {
       }
       return (ret.ToString());
     }
+#endif
+    #endregion
 
     /// <summary>
     /// Find the difference in 2 texts, comparing by textlines.
@@ -197,7 +261,7 @@ namespace my.utils {
       bool oddDelta = (Delta & 1) != 0;
 
       int  MaxD = ((UpperA - LowerA + UpperB - LowerB) / 2) + 1;
-			
+		
       // Debug.Write(2, "SMS", String.Format("Search the box: A[{0}-{1}] to B[{2}-{3}]", LowerA, UpperA, LowerB, UpperB));
 
       // init vectors
@@ -232,8 +296,8 @@ namespace my.utils {
             if (UpVector[vOffset + k] <= DownVector[vOffset + k]) {
               ret.x = DownVector[vOffset + k];
               ret.y = DownVector[vOffset + k] - k;
-              ret.u = UpVector[vOffset + k];
-              ret.v = UpVector[vOffset + k] - k;
+              // ret.u = UpVector[vOffset + k];      // 2002.09.20: no need for 2 points 
+              // ret.v = UpVector[vOffset + k] - k;
               return (ret);
             } // if
           } // if
@@ -265,8 +329,8 @@ namespace my.utils {
             if (UpVector[vOffset + k] <= DownVector[vOffset + k]) {
               ret.x = DownVector[vOffset + k];
               ret.y = DownVector[vOffset + k] - k;
-              ret.u = UpVector[vOffset + k];
-              ret.v = UpVector[vOffset + k] - k;
+              // ret.u = UpVector[vOffset + k];     // 2002.09.20: no need for 2 points 
+              // ret.v = UpVector[vOffset + k] - k;
               return (ret);
             } // if
           } // if
@@ -291,8 +355,7 @@ namespace my.utils {
     /// <param name="DataB">sequence B</param>
     /// <param name="LowerB">lower bound of the actual range in DataB</param>
     /// <param name="UpperB">upper bound of the actual range in DataB (exclusive)</param>
-    private void LCS(DiffData DataA, int LowerA, int UpperA, DiffData DataB, int LowerB, int UpperB) 
-    {
+    private void LCS(DiffData DataA, int LowerA, int UpperA, DiffData DataB, int LowerB, int UpperB) {
       // Debug.Write(2, "LCS", String.Format("Analyse the box: A[{0}-{1}] to B[{2}-{3}]", LowerA, UpperA, LowerB, UpperB));
 
       // Fast walkthrough equal lines at the start
@@ -301,7 +364,7 @@ namespace my.utils {
       }
 
       // Fast walkthrough equal lines at the end
-      while (UpperA > LowerA && UpperB > LowerB && DataA.data[UpperA - 1] == DataB.data[UpperB - 1]) {
+      while (LowerA < UpperA && LowerB < UpperB && DataA.data[UpperA-1] == DataB.data[UpperB-1]) {
         --UpperA; --UpperB;
       }
 			
@@ -318,11 +381,11 @@ namespace my.utils {
       } else {
         // Find the middle snakea and length of an optimal path for A and B
         SMSRD smsrd = SMS(DataA, LowerA, UpperA, DataB, LowerB, UpperB);
-        // Debug.Write(2, "MiddleSnakeData", String.Format("{0},{1} to {2},{3}", smsrd.x, smsrd.y, smsrd.u, smsrd.v));
+        // Debug.Write(2, "MiddleSnakeData", String.Format("{0},{1}", smsrd.x, smsrd.y));
 
-        // The path is from (x,y) to (u,v)
+        // The path is from LowerX to (x,y) and (x,y) ot UpperX
         LCS(DataA, LowerA, smsrd.x, DataB, LowerB, smsrd.y);
-        LCS(DataA, smsrd.u, UpperA, DataB, smsrd.v, UpperB);
+        LCS(DataA, smsrd.x, UpperA, DataB, smsrd.y, UpperB);  // 2002.09.20: no need for 2 points 
       }
     } // LCS()
 		
@@ -337,11 +400,13 @@ namespace my.utils {
       Item []result;
 
       int StartA, StartB;
-      int LineA = 0;
-      int LineB = 0;
-			
+      int LineA, LineB;
+
+      LineA = 0;
+      LineB = 0;
       while (LineA < DataA.Length || LineB < DataB.Length) {
-        if ((! DataA.modified[LineA]) && (! DataB.modified[LineB])) {
+        if ((LineA < DataA.Length) && (! DataA.modified[LineA])
+          && (LineB < DataB.Length) && (! DataB.modified[LineB])) {
           // equal lines
           LineA++; 
           LineB++;
@@ -351,10 +416,12 @@ namespace my.utils {
           StartA = LineA;
           StartB = LineB;
   					
-          while (LineA < DataA.Length && DataA.modified[LineA])
+          while (LineA < DataA.Length && (LineB >= DataB.Length || DataA.modified[LineA]))
+            // while (LineA < DataA.Length && DataA.modified[LineA])
             LineA++;
 
-          while (LineB < DataB.Length && DataB.modified[LineB])
+          while (LineB < DataB.Length && (LineA >= DataA.Length || DataB.modified[LineB]))
+            // while (LineB < DataB.Length && DataB.modified[LineB])
             LineB++;
 
           if ((StartA < LineA) || (StartB < LineB)) {
@@ -369,8 +436,9 @@ namespace my.utils {
         } // if
       } // while
 
-		result = new Item[a.Count];
-	  a.CopyTo(result);
+      result = new Item[a.Count];
+      a.CopyTo(result);
+
       return (result);
     }
 
